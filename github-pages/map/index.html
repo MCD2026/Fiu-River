@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fiu River Photo Map</title>
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <style>
+    html, body, #map { width:100%; height:100%; margin:0; }
+    body { font-family:Arial, Helvetica, sans-serif; }
+    .leaflet-popup-content-wrapper { border-radius:8px; padding:0; overflow:hidden; }
+    .leaflet-popup-content { margin:0; width:min(460px,78vw) !important; }
+    .photo { display:block; width:100%; max-height:56vh; object-fit:contain; background:#18201d; }
+    .caption { padding:10px 12px 12px; color:#273138; }
+    .caption strong { display:block; margin-bottom:3px; font-size:.94rem; }
+    .caption span { color:#64727a; font-size:.8rem; }
+    .caption a { float:right; color:#0b6b3a; font-weight:700; text-decoration:none; }
+    .photo-marker { width:16px; height:16px; border:2px solid #fff; border-radius:50%; background:#0b6b3a; box-shadow:0 1px 5px rgba(0,0,0,.55); }
+    .fit-control { background:#fff; border:2px solid rgba(0,0,0,.2); border-radius:4px; color:#273138; cursor:pointer; font-weight:700; padding:7px 9px; }
+    .fit-control:hover { background:#f4f7f5; }
+    .leaflet-control-layers { font-size:.86rem; }
+  </style>
+</head>
+<body>
+  <div id="map" role="application" aria-label="Map of Fiu River site photos"></div>
+  <script src="vendor/leaflet.js"></script>
+  <script src="data/Fiu_Photos.js"></script>
+  <script>
+    const map = L.map('map', { zoomControl:true, minZoom:3 });
+    const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution:'Tiles &copy; Esri', maxZoom:20
+    }).addTo(map);
+    const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution:'&copy; OpenStreetMap contributors', maxZoom:20
+    });
+    L.control.layers({ 'Satellite':satellite, 'Street map':streets }, null, { position:'topright' }).addTo(map);
+
+    const markers = L.featureGroup().addTo(map);
+    const icon = L.divIcon({ className:'', html:'<div class="photo-marker"></div>', iconSize:[16,16], iconAnchor:[8,8] });
+
+    function formatDate(value) {
+      if (!value) return '';
+      return new Intl.DateTimeFormat('en-NZ', { dateStyle:'medium', timeStyle:'short', timeZone:'Pacific/Guadalcanal' }).format(new Date(value));
+    }
+
+    json_Fiu_Photos.features.forEach((feature) => {
+      const [lng, lat] = feature.geometry.coordinates;
+      const p = feature.properties;
+      const popup = `<a href="${p.photo}" target="_blank" rel="noopener"><img class="photo" src="${p.photo}" alt="${p.filename}" loading="lazy"></a>` +
+        `<div class="caption"><a href="${p.photo}" target="_blank" rel="noopener">Full size ↗</a><strong>${p.filename}</strong><span>${formatDate(p.timestamp)}</span></div>`;
+      L.marker([lat, lng], { icon }).bindPopup(popup, { maxWidth:500, minWidth:240 }).addTo(markers);
+    });
+
+    function fitPhotos() {
+      if (markers.getLayers().length) map.fitBounds(markers.getBounds().pad(0.08), { maxZoom:17 });
+    }
+    fitPhotos();
+
+    const FitControl = L.Control.extend({
+      options:{ position:'topleft' },
+      onAdd() {
+        const button = L.DomUtil.create('button', 'fit-control');
+        button.type = 'button';
+        button.title = 'Show all photos';
+        button.textContent = 'Fit all';
+        L.DomEvent.disableClickPropagation(button);
+        L.DomEvent.on(button, 'click', fitPhotos);
+        return button;
+      }
+    });
+    map.addControl(new FitControl());
+  </script>
+</body>
+</html>
