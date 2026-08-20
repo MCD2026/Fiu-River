@@ -58,7 +58,7 @@
     <img class="logo" src="mcd-logo.png" alt="McConnell Dowell">
     <div class="title">
       <h1>Fiu River 3D Site Journey</h1>
-      <div class="subtitle">159 photos · 7–8 July 2026</div>
+      <div class="subtitle">159 photos · Location-guided tour</div>
     </div>
     <div class="controls">
       <a class="map-link" href="https://mcd2026.github.io/Fiu_River/" target="_blank" rel="noopener">2D map ↗</a>
@@ -129,34 +129,33 @@
       statusElement.textContent = '3D terrain ready · street-map fallback';
     });
 
-    function formatDate(value) {
-      return new Intl.DateTimeFormat('en-NZ', {
-        dateStyle:'medium', timeStyle:'short', timeZone:'Pacific/Guadalcanal'
-      }).format(new Date(value));
-    }
-
     function showPhoto(entity) {
       const now = Cesium.JulianDate.now();
       panelImage.src = entity.properties.photo.getValue(now);
       panelTitle.textContent = entity.properties.filename.getValue(now);
-      panelDate.textContent = formatDate(entity.properties.timestamp.getValue(now));
+      const routeIndex = orderedEntities.indexOf(entity) + 1;
+      const direction = entity.properties.direction.getValue(now);
+      panelDate.textContent = `Location ${routeIndex} of ${orderedEntities.length} · View ${Math.round(direction)}°`;
       panel.classList.add('open');
     }
 
     const entities = [];
-    const routePositions = [];
+    const photoRecords = [];
     json_Fiu_Photos.features.forEach((feature, index) => {
       const [lng, lat] = feature.geometry.coordinates;
       const properties = feature.properties;
       const position = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
-      routePositions.push(position);
-      entities.push(viewer.entities.add({
+      const entity = viewer.entities.add({
         id:`photo-${index + 1}`,
         position,
         properties:{
           photo:`https://mcd2026.github.io/Fiu_River/map/${properties.photo}`,
           filename:properties.filename,
-          timestamp:properties.timestamp
+          timestamp:properties.timestamp,
+          longitude:lng,
+          latitude:lat,
+          direction:properties.direction,
+          altitude:properties.altitude
         },
         point:{
           pixelSize:11,
@@ -166,17 +165,60 @@
           heightReference:Cesium.HeightReference.CLAMP_TO_GROUND,
           disableDepthTestDistance:3000
         }
-      }));
+      });
+      entities.push(entity);
+      photoRecords.push({entity, lng, lat, position});
     });
 
-    viewer.entities.add({
-      id:'inspection-route',
-      polyline:{
-        positions:routePositions,
-        width:3,
-        material:Cesium.Color.fromCssColorString('#bed731').withAlpha(.9),
-        clampToGround:true
+    function distanceSquared(a, b) {
+      const latitudeScale = Math.cos(Cesium.Math.toRadians((a.lat + b.lat) / 2));
+      const x = (a.lng - b.lng) * latitudeScale;
+      const y = a.lat - b.lat;
+      return (x * x) + (y * y);
+    }
+
+    function orderByLocation(records) {
+      const remaining = records.slice();
+      const startIndex = remaining.reduce((best, record, index) =>
+        record.lat > remaining[best].lat ? index : best, 0);
+      const ordered = [remaining.splice(startIndex, 1)[0]];
+      while (remaining.length) {
+        const current = ordered[ordered.length - 1];
+        let nearestIndex = 0;
+        let nearestDistance = distanceSquared(current, remaining[0]);
+        for (let index = 1; index < remaining.length; index++) {
+          const candidateDistance = distanceSquared(current, remaining[index]);
+          if (candidateDistance < nearestDistance) {
+            nearestDistance = candidateDistance;
+            nearestIndex = index;
+          }
+        }
+        ordered.push(remaining.splice(nearestIndex, 1)[0]);
       }
+      return ordered;
+    }
+
+    const orderedRecords = orderByLocation(photoRecords);
+    const orderedEntities = orderedRecords.map(record => record.entity);
+    const routePositions = orderedRecords.map(record => record.position);
+
+    const routeSegments = [[]];
+    orderedRecords.forEach((record, index) => {
+      if (index > 0 && Math.sqrt(distanceSquared(orderedRecords[index - 1], record)) > 0.006) {
+        routeSegments.push([]);
+      }
+      routeSegments[routeSegments.length - 1].push(record.position);
+    });
+    routeSegments.filter(segment => segment.length > 1).forEach((positions, index) => {
+      viewer.entities.add({
+        id:`inspection-route-${index + 1}`,
+        polyline:{
+          positions,
+          width:3,
+          material:Cesium.Color.fromCssColorString('#bed731').withAlpha(.9),
+          clampToGround:true
+        }
+      });
     });
 
     const siteBounds = Cesium.BoundingSphere.fromPoints(routePositions);
@@ -194,36 +236,96 @@
 
     resetView(0);
 
+    async function flyToPhotoView(entity, duration = 1.8) {
+      const now = Cesium.JulianDate.now();
+      const longitude = entity.properties.longitude.getValue(now);
+      const latitude = entity.properties.latitude.getValue(now);
+      const directionValue = entity.properties.direction.getValue(now);
+      const altitudeValue = entity.properties.altitude.getValue(now);
+      const direction = Number.isFinite(directionValue) ? directionValue : 25;
+      const cartographic = Cesium.Cartographic.fromDegrees(longitude, latitude);
+      const fallbackHeight = Number.isFinite(altitudeValue) ? altitudeValue : 0;
+      const origin = Cesium.Cartesian3.fromDegrees(longitude, latitude, fallbackHeight);
+      const localFrame = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+      const heading = Cesium.Math.toRadians(direction);
+      const cameraCandidates = [120, 80, 40, 0].map(distance => {
+        const offset = new Cesium.Cartesian3(
+          -Math.sin(heading) * distance,
+          -Math.cos(heading) * distance,
+          0
+        );
+        const groundPoint = Cesium.Matrix4.multiplyByPoint(localFrame, offset, new Cesium.Cartesian3());
+        return {distance, cartographic:Cesium.Cartographic.fromCartesian(groundPoint)};
+      });
+      try {
+        await Cesium.sampleTerrain(terrainProvider, 15, [cartographic, ...cameraCandidates.map(candidate => candidate.cartographic)]);
+      } catch (error) {
+        console.warn('Terrain sample unavailable; using photo altitude fallback.', error);
+      }
+      const groundHeight = Number.isFinite(cartographic.height) ? cartographic.height : fallbackHeight;
+      const cameraCandidate = cameraCandidates.find(candidate => {
+        const candidateHeight = Number.isFinite(candidate.cartographic.height) ? candidate.cartographic.height : groundHeight;
+        return candidateHeight <= groundHeight + 25;
+      }) || cameraCandidates[cameraCandidates.length - 1];
+      const cameraCartographic = cameraCandidate.cartographic;
+      const approachDistance = cameraCandidate.distance;
+      const cameraHeight = groundHeight + 60;
+      const destination = Cesium.Cartesian3.fromRadians(
+        cameraCartographic.longitude,
+        cameraCartographic.latitude,
+        cameraHeight
+      );
+      const pitch = Cesium.Math.clamp(
+        Math.atan2((groundHeight + 6) - cameraHeight, approachDistance),
+        Cesium.Math.toRadians(-28),
+        Cesium.Math.toRadians(-18)
+      );
+      return await new Promise(resolve => {
+        viewer.camera.flyTo({
+          destination,
+          orientation:{ heading, pitch, roll:0 },
+          duration,
+          easingFunction:Cesium.EasingFunction.QUADRATIC_IN_OUT,
+          complete:() => resolve(true),
+          cancel:() => resolve(false)
+        });
+      });
+    }
+
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction((movement) => {
       const picked = viewer.scene.pick(movement.position);
       if (Cesium.defined(picked) && entities.includes(picked.id)) {
         showPhoto(picked.id);
-        viewer.flyTo(picked.id, {
-          duration:1.2,
-          offset:new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-38), 360)
-        });
+        flyToPhotoView(picked.id, 1.2);
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
     async function startTour() {
       if (tourButton.dataset.running === 'true') {
         tourCancelled = true;
+        viewer.camera.cancelFlight();
         return;
       }
       tourCancelled = false;
       tourButton.dataset.running = 'true';
       tourButton.textContent = '■ Stop tour';
-      const stops = Array.from({length:12}, (_, i) => entities[Math.round(i * (entities.length - 1) / 11)]);
+      const cumulativeDistances = [0];
+      for (let index = 1; index < orderedRecords.length; index++) {
+        cumulativeDistances.push(cumulativeDistances[index - 1] + Math.sqrt(distanceSquared(orderedRecords[index - 1], orderedRecords[index])));
+      }
+      const routeLength = cumulativeDistances[cumulativeDistances.length - 1];
+      const stops = Array.from({length:12}, (_, stopIndex) => {
+        const targetDistance = routeLength * stopIndex / 11;
+        const recordIndex = cumulativeDistances.findIndex(distance => distance >= targetDistance);
+        return orderedEntities[recordIndex < 0 ? orderedEntities.length - 1 : recordIndex];
+      });
       for (const entity of stops) {
         if (tourCancelled) break;
-        await viewer.flyTo(entity, {
-          duration:1.8,
-          offset:new Cesium.HeadingPitchRange(Cesium.Math.toRadians(25), Cesium.Math.toRadians(-38), 420)
-        });
+        await flyToPhotoView(entity, 2.2);
         if (tourCancelled) break;
         showPhoto(entity);
-        await new Promise(resolve => setTimeout(resolve, 1700));
+        await new Promise(resolve => setTimeout(resolve, 2100));
       }
       tourButton.dataset.running = 'false';
       tourButton.textContent = '▶ Play tour';
