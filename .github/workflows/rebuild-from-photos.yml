@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: fiu-river-photo-rebuild
@@ -19,6 +21,9 @@ concurrency:
 jobs:
   rebuild:
     if: github.actor != 'github-actions[bot]'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout latest site
@@ -56,3 +61,15 @@ jobs:
           git commit -m "Process uploaded Fiu River photos [skip rebuild]"
           git pull --rebase origin main
           git push origin HEAD:main
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload rebuilt site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: github-pages
+
+      - name: Deploy rebuilt site
+        id: deployment
+        uses: actions/deploy-pages@v4
